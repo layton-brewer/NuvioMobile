@@ -4,6 +4,9 @@ enum class StreamAutoPlayMode {
     MANUAL,
     FIRST_STREAM,
     REGEX_MATCH,
+
+    /** Picks the best instantly playable source for this device; see [StreamSmartRanker]. */
+    SMART,
 }
 
 enum class StreamAutoPlaySource {

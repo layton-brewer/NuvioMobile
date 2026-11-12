@@ -206,12 +206,15 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
         } catch (error: CancellationException) {
             throw error
         } catch (error: Exception) {
-            errorMessage = getString(
+            val torrentError = getString(
                 Res.string.player_error_failed_start_torrent,
                 error.message ?: genericUnknownLabel,
             )
-            controlsVisible = !playerControlsLocked
-            initialLoadCompleted = true
+            if (!tryFailoverToNextSource(torrentError)) {
+                errorMessage = torrentError
+                controlsVisible = !playerControlsLocked
+                initialLoadCompleted = true
+            }
         }
     }
 
@@ -222,9 +225,12 @@ internal fun PlayerScreenRuntime.BindPlayerRuntimeEffects() {
             playerController = null
             playerControllerSourceUrl = null
             playbackSnapshot = PlayerPlaybackSnapshot()
-            initialLoadCompleted = true
-            errorMessage = getString(Res.string.player_error_torrent, state.message)
-            controlsVisible = !playerControlsLocked
+            val torrentError = getString(Res.string.player_error_torrent, state.message)
+            if (!tryFailoverToNextSource(torrentError)) {
+                initialLoadCompleted = true
+                errorMessage = torrentError
+                controlsVisible = !playerControlsLocked
+            }
         }
     }
 
@@ -975,8 +981,10 @@ internal fun PlayerScreenRuntime.tryRefreshExpiredLinkAfterError(message: String
 
             val candidate = refreshedStream
             if (candidate == null) {
-                errorMessage = message
-                controlsVisible = !playerControlsLocked
+                if (message == null || !tryFailoverToNextSource(message)) {
+                    errorMessage = message
+                    controlsVisible = !playerControlsLocked
+                }
                 return@launch
             }
             // Debrid links are always requested anew; a prepared or in-memory one may be the expired link.
@@ -991,16 +999,20 @@ internal fun PlayerScreenRuntime.tryRefreshExpiredLinkAfterError(message: String
             ) {
                 is DirectDebridPlayableResult.Success -> resolved.stream
                 else -> {
-                    errorMessage = message
-                    controlsVisible = !playerControlsLocked
+                    if (message == null || !tryFailoverToNextSource(message)) {
+                        errorMessage = message
+                        controlsVisible = !playerControlsLocked
+                    }
                     return@launch
                 }
             }
 
             val refreshedUrl = stream.playableDirectUrl
             if (refreshedUrl.isNullOrBlank() || refreshedUrl == failedUrl) {
-                errorMessage = message
-                controlsVisible = !playerControlsLocked
+                if (message == null || !tryFailoverToNextSource(message)) {
+                    errorMessage = message
+                    controlsVisible = !playerControlsLocked
+                }
                 return@launch
             }
 
@@ -1045,8 +1057,10 @@ private fun PlayerScreenRuntime.retryServerSourceAfterError(message: String?): B
     credentialRefreshJob = scope.launch {
         val playback = ServerPlayback.fallback(failedUrl)
         if (playback == null) {
-            errorMessage = message
-            controlsVisible = !playerControlsLocked
+            if (message == null || !tryFailoverToNextSource(message)) {
+                errorMessage = message
+                controlsVisible = !playerControlsLocked
+            }
             return@launch
         }
         externalSubtitles = playback.subtitles

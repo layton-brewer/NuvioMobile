@@ -47,6 +47,11 @@ internal fun StreamAutoPlayModeDialog(
 ) {
     val options = listOf(
         Triple(
+            StreamAutoPlayMode.SMART,
+            Res.string.settings_playback_stream_selection_mode_smart,
+            Res.string.settings_playback_stream_selection_mode_smart_description,
+        ),
+        Triple(
             StreamAutoPlayMode.MANUAL,
             Res.string.settings_playback_stream_selection_mode_manual,
             Res.string.settings_playback_stream_selection_mode_manual_description,
