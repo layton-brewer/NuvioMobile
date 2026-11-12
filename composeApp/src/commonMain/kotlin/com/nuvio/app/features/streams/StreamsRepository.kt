@@ -61,6 +61,24 @@ object StreamsRepository {
         )
     }
 
+    /**
+     * Starts finding and ranking sources before the user presses Play, e.g. when a title's
+     * detail page opens. The later [load] for the same title reuses this search, so playback
+     * starts straight away. Does nothing when auto-play is off.
+     */
+    fun preload(type: String, videoId: String, parentMetaId: String? = null, season: Int? = null, episode: Int? = null) {
+        PlayerSettingsRepository.ensureLoaded()
+        if (PlayerSettingsRepository.uiState.value.streamAutoPlayMode == StreamAutoPlayMode.MANUAL) return
+        load(
+            type = type,
+            videoId = videoId,
+            parentMetaId = parentMetaId,
+            season = season,
+            episode = episode,
+            manualSelection = false,
+        )
+    }
+
     fun reload(type: String, videoId: String, parentMetaId: String? = null, season: Int? = null, episode: Int? = null, manualSelection: Boolean = false) {
         PluginRepository.setLocalPluginSearchPaused(false)
         load(
@@ -271,6 +289,7 @@ object StreamsRepository {
                     bingeGroupOnly = bingeGroupOnly,
                     debridEnabled = debridSettings.canResolvePlayableLinks,
                     activeResolverProviderId = debridSettings.activeResolverProviderId,
+                    isSeries = season != null && episode != null,
                 )
 
             fun settleAutoPlay(evaluation: StreamAutoPlayEvaluation) {
@@ -293,6 +312,13 @@ object StreamsRepository {
                 }
             }
 
+            // A binge-group match plays first; the normally ranked sources stay behind it as backups.
+            fun StreamItem.withRankedBackups(): StreamAutoPlayEvaluation =
+                StreamAutoPlayEvaluation(
+                    stream = this,
+                    readyStreams = listOf(this) + evaluateAutoPlay().readyStreams.filterNot { it == this },
+                )
+
             fun updateAutoPlayAfterStreamsChanged() {
                 if (!isDirectAutoPlayFlow || autoSelectTriggered) return
 
@@ -314,7 +340,7 @@ object StreamsRepository {
                                 FilenameEpisodeMatcher.matches(stream.behaviorHints.filename, nextFilename)
                         }
                         if (bingeAndFilename != null) {
-                            settleAutoPlay(StreamAutoPlayEvaluation(bingeAndFilename, allStreams))
+                            settleAutoPlay(bingeAndFilename.withRankedBackups())
                             return
                         }
                     }
@@ -325,7 +351,7 @@ object StreamsRepository {
                                 stream.infoHash?.equals(persistedInfoHash, ignoreCase = true) == true
                         }
                         if (bingeAndInfoHash != null) {
-                            settleAutoPlay(StreamAutoPlayEvaluation(bingeAndInfoHash, allStreams))
+                            settleAutoPlay(bingeAndInfoHash.withRankedBackups())
                             return
                         }
                     }

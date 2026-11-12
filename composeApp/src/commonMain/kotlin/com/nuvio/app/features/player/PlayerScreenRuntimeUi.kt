@@ -243,6 +243,10 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi(
                         if (message != null && maybeFailoverPlaybackEngine(resolvedAutoEngine)) {
                             return@PlatformPlayerSurface
                         }
+                        // Still failing: move on to the next ranked source in the background.
+                        if (message != null && tryFailoverToNextSource(message)) {
+                            return@PlatformPlayerSurface
+                        }
                         errorMessage = message
                         if (message != null) {
                             scrubbingPositionMs = null

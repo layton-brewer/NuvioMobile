@@ -13,6 +13,7 @@ import com.nuvio.app.features.downloads.DownloadsRepository
 import com.nuvio.app.features.player.skip.NextEpisodeInfo
 import com.nuvio.app.features.player.skip.PlayerNextEpisodeRules
 import com.nuvio.app.features.streams.StreamAutoPlayMode
+import com.nuvio.app.features.streams.PlaybackFailover
 import com.nuvio.app.features.streams.StreamAutoPlaySelector
 import com.nuvio.app.features.streams.StreamAutoPlaySource
 import com.nuvio.app.features.streams.StreamItem
@@ -122,7 +123,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             settings.streamAutoPlayPreferBingeGroup
 
     val effectiveMode = if (shouldAutoSelectInManualMode) {
-        StreamAutoPlayMode.FIRST_STREAM
+        StreamAutoPlayMode.SMART
     } else {
         settings.streamAutoPlayMode
     }
@@ -216,6 +217,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 bingeGroupOnly = bingeGroupOnlyManualMode,
                 debridEnabled = debridSettings.canResolvePlayableLinks,
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
+                isSeries = true,
             )
 
         fun tryBingeGroupOnly(streams: List<StreamItem>): StreamItem? {
@@ -233,6 +235,7 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
                 bingeGroupOnly = true,
                 debridEnabled = debridSettings.canResolvePlayableLinks,
                 activeResolverProviderId = debridSettings.activeResolverProviderId,
+                isSeries = true,
             )
         }
 
@@ -317,21 +320,52 @@ internal fun CoroutineScope.launchPlayerNextEpisodeAutoPlay(
             }
         }
 
-        val selected = selectedStream?.let { stream ->
+        // Try the picked source first, then the other ranked sources, until one resolves.
+        val rankedStreams = selectedStream?.let { first ->
+            val backups = StreamAutoPlaySelector.evaluateAutoPlayStream(
+                streams = PlayerStreamsRepository.episodeStreamsState.value.groups.flatMap { it.streams },
+                mode = effectiveMode,
+                regexPattern = effectiveRegex,
+                source = effectiveSource,
+                installedAddonNames = installedAddonNames,
+                selectedAddons = effectiveSelectedAddons,
+                selectedPlugins = effectiveSelectedPlugins,
+                preferredBingeGroup = preferredBingeGroup,
+                preferBingeGroupInSelection = settings.streamAutoPlayPreferBingeGroup,
+                debridEnabled = debridSettings.canResolvePlayableLinks,
+                activeResolverProviderId = debridSettings.activeResolverProviderId,
+                isSeries = true,
+            ).readyStreams
+            listOf(first) + backups.filterNot { it == first }
+        }.orEmpty()
+        var selected: StreamItem? = null
+        var remainingStreams: List<StreamItem> = emptyList()
+        var lastFailure: DirectDebridPlayableResult? = null
+        for ((index, stream) in rankedStreams.take(PlaybackFailover.MAX_ATTEMPTS).withIndex()) {
             when (val result = DirectDebridPlaybackResolver.resolveToPlayableStream(stream, nextVideo.season, nextVideo.episode)) {
-                is DirectDebridPlayableResult.Success -> result.stream
-                else -> {
-                    result.toastMessage()?.let { NuvioToastController.show(it) }
-                    PlayerStreamsRepository.loadEpisodeStreams(
-                        type = type,
-                        videoId = nextVideo.id,
-                        season = nextVideo.season,
-                        episode = nextVideo.episode,
-                        forceRefresh = true,
-                    )
-                    null
+                is DirectDebridPlayableResult.Success -> {
+                    selected = result.stream
+                    remainingStreams = rankedStreams.drop(index + 1)
                 }
+                else -> lastFailure = result
             }
+            if (selected != null) break
+        }
+        if (selected == null && lastFailure != null) {
+            lastFailure.toastMessage()?.let { NuvioToastController.show(it) }
+            PlayerStreamsRepository.loadEpisodeStreams(
+                type = type,
+                videoId = nextVideo.id,
+                season = nextVideo.season,
+                episode = nextVideo.episode,
+                forceRefresh = true,
+            )
+        }
+        if (selected != null) {
+            PlaybackFailover.offer(
+                PlaybackFailover.contentKey(nextVideo.id, nextVideo.season, nextVideo.episode),
+                remainingStreams,
+            )
         }
         onSearchingChanged(false)
         if (selected != null) {

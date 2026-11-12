@@ -50,6 +50,7 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        isSeries: Boolean = false,
     ): StreamItem? =
         evaluateAutoPlayStream(
             streams = streams,
@@ -64,6 +65,7 @@ object StreamAutoPlaySelector {
             bingeGroupOnly = bingeGroupOnly,
             debridEnabled = debridEnabled,
             activeResolverProviderId = activeResolverProviderId,
+            isSeries = isSeries,
         ).stream
 
     fun evaluateAutoPlayStream(
@@ -79,6 +81,7 @@ object StreamAutoPlaySelector {
         bingeGroupOnly: Boolean = false,
         debridEnabled: Boolean = true,
         activeResolverProviderId: String? = null,
+        isSeries: Boolean = false,
     ): StreamAutoPlayEvaluation {
         if (streams.isEmpty()) return StreamAutoPlayEvaluation()
 
@@ -136,6 +139,7 @@ object StreamAutoPlaySelector {
         val matchingStreams = when (mode) {
             StreamAutoPlayMode.MANUAL -> emptyList()
             StreamAutoPlayMode.FIRST_STREAM -> candidateStreams
+            StreamAutoPlayMode.SMART -> StreamSmartRanker.rank(candidateStreams, isSeries = isSeries)
             StreamAutoPlayMode.REGEX_MATCH -> {
                 val pattern = regexPattern.trim()
 

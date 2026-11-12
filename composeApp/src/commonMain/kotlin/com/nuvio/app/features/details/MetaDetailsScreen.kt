@@ -813,6 +813,23 @@ fun MetaDetailsScreen(
                     seasonNumber = seriesAction?.seasonNumber,
                     episodeNumber = seriesAction?.episodeNumber,
                 )
+                // Find and rank sources for whatever the Play button will start, in the
+                // background, so pressing Play starts the video instead of a search.
+                val preloadSeason = seriesAction?.seasonNumber
+                val preloadEpisode = seriesAction?.episodeNumber
+                val isSeriesWithoutEpisode = (meta.type == "series" || hasEpisodes) && seriesAction == null
+                LaunchedEffect(meta.type, meta.id, primaryVideoId, preloadSeason, preloadEpisode, isPrimaryPlayEnabled, isSeriesWithoutEpisode) {
+                    if (!isPrimaryPlayEnabled || shufflePoolEmpty || isSeriesWithoutEpisode) return@LaunchedEffect
+                    // Short pause so quick browsing through titles does not hit every add-on.
+                    kotlinx.coroutines.delay(700)
+                    com.nuvio.app.features.streams.StreamsRepository.preload(
+                        type = meta.type,
+                        videoId = primaryVideoId,
+                        parentMetaId = meta.id,
+                        season = preloadSeason,
+                        episode = preloadEpisode,
+                    )
+                }
                 val playText = stringResource(Res.string.action_play)
                 val resumeText = stringResource(Res.string.action_resume)
                 val chooseEpisodesText = stringResource(Res.string.shuffle_change_selection)

@@ -13,6 +13,7 @@ import com.nuvio.app.features.p2p.P2pSettingsRepository
 import com.nuvio.app.features.p2p.P2pStreamingEngine
 import com.nuvio.app.features.servers.ServerPlayback
 import com.nuvio.app.features.servers.serverPlaybackMessage
+import com.nuvio.app.features.streams.PlaybackFailover
 import com.nuvio.app.features.streams.StreamBehaviorHints
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLinkCacheRepository
@@ -215,13 +216,17 @@ internal fun PlayerScreenRuntime.saveP2pStreamForReuse(
     )
 }
 
-internal fun PlayerScreenRuntime.switchToP2pSourceStream(stream: StreamItem) {
+internal fun PlayerScreenRuntime.switchToP2pSourceStream(
+    stream: StreamItem,
+    keepPendingResume: Boolean = false,
+) {
     val infoHash = stream.p2pInfoHash ?: return
     if (!P2pSettingsRepository.isVisible) return
     if (!P2pSettingsRepository.uiState.value.p2pEnabled) {
         pendingP2pSwitch = PendingPlayerP2pSwitch(stream = stream, episode = null, isAutoPlay = false)
         return
     }
+    val keepResume = keepPendingResume && !initialSeekApplied
     val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
     flushWatchProgress()
     stopActiveP2pStream()
@@ -252,10 +257,12 @@ internal fun PlayerScreenRuntime.switchToP2pSourceStream(stream: StreamItem) {
     activeSubtitleExtras = SubtitleRequestExtras.from(stream.behaviorHints)
     currentStreamFilename = stream.behaviorHints.filename
     currentStreamInfoHash = stream.infoHash
-    activeInitialPositionMs = currentPositionMs
-    activeInitialProgressFraction = null
+    if (!keepResume) {
+        activeInitialPositionMs = currentPositionMs
+        activeInitialProgressFraction = null
+    }
     showSourcesPanel = false
-    controlsVisible = true
+    controlsVisible = !keepPendingResume
     PlayerStreamsRepository.pauseSearchForPlayback()
 }
 
@@ -298,16 +305,23 @@ internal fun PlayerScreenRuntime.switchToP2pEpisodeStream(
 internal fun PlayerScreenRuntime.switchToSource(
     stream: StreamItem,
     saveForReuse: Boolean = true,
+    // Set when replacing a source that failed: if it never got to its resume point, the
+    // replacement must start from that same pending resume point, not from zero.
+    keepPendingResume: Boolean = false,
 ) {
-    if (prepareServerForPlayer(stream) { switchToSource(it) }) return
+    if (prepareServerForPlayer(stream) { switchToSource(it, keepPendingResume = keepPendingResume) }) return
     // The resolved URL expires after a few hours, so it isn't kept for reuse.
-    if (resolveYouTubeForPlayer(stream) { switchToSource(it, saveForReuse = false) }) return
+    if (
+        resolveYouTubeForPlayer(stream) {
+            switchToSource(it, saveForReuse = false, keepPendingResume = keepPendingResume)
+        }
+    ) return
     if (
         resolveDebridForPlayer(
             stream = stream,
             season = activeSeasonNumber,
             episode = activeEpisodeNumber,
-            onResolved = { switchToSource(it) },
+            onResolved = { switchToSource(it, keepPendingResume = keepPendingResume) },
             onStale = {
                 val vid = activeVideoId
                 if (vid != null) {
@@ -323,7 +337,7 @@ internal fun PlayerScreenRuntime.switchToSource(
         )
     ) return
     if (isP2pStream(stream)) {
-        switchToP2pSourceStream(stream)
+        switchToP2pSourceStream(stream, keepPendingResume = keepPendingResume)
         return
     }
     if (openExternalSourceUrl(stream)) return
@@ -333,6 +347,7 @@ internal fun PlayerScreenRuntime.switchToSource(
         activeSourceIdentityKey = sourceIdentityKey ?: activeSourceIdentityKey
         return
     }
+    val keepResume = keepPendingResume && !initialSeekApplied
     val currentPositionMs = playbackSnapshot.positionMs.coerceAtLeast(0L)
     flushWatchProgress()
     stopActiveP2pStream()
@@ -358,11 +373,67 @@ internal fun PlayerScreenRuntime.switchToSource(
     activeSubtitleExtras = SubtitleRequestExtras.from(stream.behaviorHints, url)
     currentStreamFilename = stream.behaviorHints.filename
     currentStreamInfoHash = stream.infoHash
-    activeInitialPositionMs = currentPositionMs
-    activeInitialProgressFraction = null
+    if (!keepResume) {
+        activeInitialPositionMs = currentPositionMs
+        activeInitialProgressFraction = null
+    }
     showSourcesPanel = false
-    controlsVisible = true
+    controlsVisible = !keepPendingResume
     PlayerStreamsRepository.pauseSearchForPlayback()
+}
+
+/**
+ * Replaces a source that failed to play with the next backup source auto-play ranked for this
+ * title, keeping the playback position. Runs in the background: the user only sees the loading
+ * state, never the error, unless every backup has failed too.
+ *
+ * @return true when a replacement is being tried and the caller should swallow the error.
+ */
+internal fun PlayerScreenRuntime.tryFailoverToNextSource(message: String): Boolean {
+    if (isNetworkOffline()) return false
+    val key = PlaybackFailover.contentKey(activeVideoId, activeSeasonNumber, activeEpisodeNumber)
+    if (!PlaybackFailover.hasNext(key)) return false
+    val failedPlaybackKey = activePlaybackKey
+    val failedStream = activeStream
+    val failedUrl = activeSourceUrl
+    removeFailedStreamFromCache()
+    scope.launch {
+        while (activePlaybackKey == failedPlaybackKey) {
+            val candidate = PlaybackFailover.next(key, failed = failedStream, failedUrl = failedUrl) ?: break
+            val playable = when {
+                candidate.needsServerPreparation ->
+                    runCatching { ServerPlayback.prepare(candidate) }
+                        .onFailure { if (it is CancellationException) throw it }
+                        .getOrNull()
+                DirectDebridPlaybackResolver.shouldResolveToPlayableStream(candidate) ->
+                    (
+                        DirectDebridPlaybackResolver.resolveToPlayableStream(
+                            stream = candidate,
+                            season = activeSeasonNumber,
+                            episode = activeEpisodeNumber,
+                        ) as? DirectDebridPlayableResult.Success
+                    )?.stream
+                else -> candidate
+            } ?: continue
+            if (activePlaybackKey != failedPlaybackKey) return@launch
+            val url = playable.playableDirectUrl
+            val canPlay = when {
+                url != null -> url != failedUrl
+                isP2pStream(playable) ->
+                    P2pSettingsRepository.isVisible && P2pSettingsRepository.uiState.value.p2pEnabled
+                else -> false
+            }
+            if (!canPlay) continue
+            switchToSource(playable, keepPendingResume = true)
+            return@launch
+        }
+        if (activePlaybackKey != failedPlaybackKey) return@launch
+        // Every backup failed as well: surface the original error.
+        errorMessage = message
+        scrubbingPositionMs = null
+        controlsVisible = !playerControlsLocked
+    }
+    return true
 }
 
 internal fun PlayerScreenRuntime.switchToEpisodeStream(

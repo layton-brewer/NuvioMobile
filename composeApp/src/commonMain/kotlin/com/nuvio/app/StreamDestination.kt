@@ -35,6 +35,7 @@ import com.nuvio.app.features.player.sanitizePlaybackResponseHeaders
 import com.nuvio.app.features.servers.ServerPlayback
 import com.nuvio.app.features.servers.serverPlaybackMessage
 import com.nuvio.app.features.streams.StreamBehaviorHints
+import com.nuvio.app.features.streams.PlaybackFailover
 import com.nuvio.app.features.streams.StreamItem
 import com.nuvio.app.features.streams.StreamLaunchStore
 import com.nuvio.app.features.streams.StreamLinkCacheRepository
@@ -482,8 +483,13 @@ internal fun StreamDestination(
             selectedStream
         }
         val sourceUrl = stream.playableDirectUrl
+        // Hand the ranked sources that were not picked to the player, so a source that fails
+        // to play is replaced in the background instead of ending in an error screen.
+        val failoverKey = PlaybackFailover.contentKey(effectiveVideoId, launch.seasonNumber, launch.episodeNumber)
+        val failoverCandidates = streamsUiState.autoPlayCandidates.filterNot { it == selectedStream }
         if (sourceUrl == null && stream.needsLocalDebridResolve && stream.p2pInfoHash != null) {
             autoPlayHandled = true
+            PlaybackFailover.offer(failoverKey, failoverCandidates)
             requestOrOpenP2pStream(
                 stream = stream,
                 resolvedResumePositionMs = launch.resumePositionMs,
@@ -567,6 +573,7 @@ internal fun StreamDestination(
             StreamsRepository.cancelLoading()
             return@LaunchedEffect
         }
+        PlaybackFailover.offer(failoverKey, failoverCandidates)
         StreamsRepository.consumeAutoPlay()
         StreamsRepository.cancelLoading()
         autoPlayNavigationStarted = true

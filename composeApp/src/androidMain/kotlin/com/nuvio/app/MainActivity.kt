@@ -102,6 +102,11 @@ open class MainActivity : AppCompatActivity() {
         com.nuvio.app.features.shuffle.EpisodeShuffleStorage.initialize(applicationContext)
         HomeCatalogSettingsStorage.initialize(applicationContext)
         PlayerSettingsStorage.initialize(applicationContext)
+        // Smart auto-play picks sources that match this screen (short side = video height).
+        resources.displayMetrics.let { metrics ->
+            com.nuvio.app.features.streams.StreamSmartRanker.deviceMaxVideoHeight =
+                minOf(metrics.widthPixels, metrics.heightPixels)
+        }
         PlayerTrackPreferenceStorage.initialize(applicationContext)
         P2pSettingsStorage.initialize(applicationContext)
         P2pStreamingEngine.initialize(applicationContext)
